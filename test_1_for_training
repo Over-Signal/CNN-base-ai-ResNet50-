@@ -1,0 +1,48 @@
+import tensorflow as tf
+from tensorflow.keras import layers, models, callbacks
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+import matplotlib.pyplot as plt
+
+#이미지 224*224
+IMG_SIZE = 224
+BATCH_SIZE = 32
+total_run_times = 10
+types_of_tanks = 10 #일단 탱크 10종으로 표시함
+
+#이건 단순히 더 많은 데이터를 학습하도록 기존이미지를 살짝 변형하는거-사진을 살짝 돌리고 확대하고 ㅇ좌우 회전 시키는거임
+tank_train_module = ImageDataGenerator(
+    preprocess_input=preprocess_input,#지금 맥 버츄얼 구성해도 잘 안되서 모르겠지마ㅏㄴ 자동 스케일러       
+    rotation_range=10,   
+    zoom_range=0.4,      
+    horizontal_flip=True 
+)
+
+
+data_rescal = ImageDataGenerator(preprocess_input=preprocess_input)
+
+#데이터 읽어오기 디렉토리 변경은 나중에 하는걸로
+tank_train_data = tank_train_module.flow_from_directory(
+    "dataset/train(just a example)",
+    target_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE,
+    class_mode="categorical" 
+)
+
+data_rescaled = data_rescal.flow_from_directory(
+    "dataset/val",
+    target_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE,
+    class_mode="categorical"
+)
+
+#요게 ResNet50 쓰는 이유->기본 트레이닝 된 걸 들고오는거(모양, 선, 색깔, 등등)
+base_model = ResNet50(
+    weights="imagenet",
+    include_top=False, #이걸 나누는 라벨은 없애는 걸로
+    input_shape=(IMG_SIZE, IMG_SIZE, 3)
+)
+
+
+base_model.trainable = False#이건 구글링 해서 넣은건데 아직 잘 모르겠다
+
