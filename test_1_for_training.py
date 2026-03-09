@@ -46,3 +46,40 @@ base_model = ResNet50(
 
 base_model.trainable = False#이건 구글링 해서 넣은건데 아직 잘 모르겠다
 
+#학습 전 머리 달아주는 사전 작업
+model = models.Sequential([
+    base_model, #ResNet50
+    layers.GlobalAveragePooling2D(),  #3차원->1차원으로 단순화 시키는 명령어?
+    layers.Dense(256, activation='relu'), #뉴런(생각하는 장치?) 256개 생성
+    layers.Dropout(0.5), #과부화 피하기 용 - 절반 쉬게하기              
+    layers.Dense(types_of_tanks, activation='softmax') 
+])
+
+# 모델이 어떻게 생겼나 명세서 한 번 출력해 봅니다.
+model.summary()
+
+
+model.compile(
+    optimizer='adam', #더 좋은 optimizer 있는지 찾는중
+    loss='categorical_crossentropy', #이게 오차 구하는 공식-레딧
+    metrics=['accuracy'] #밑에 학습 시 저장하는 기준을 정확도로 설정
+)
+
+#자동저장
+checkpoint = callbacks.ModelCheckpoint(
+    "tank_classifier_beta.h5", #파일 이름 설정
+    save_best_only=True, #더 좋은게 나오면 계속 다시 저장       
+    monitor='val_accuracy'   #정확도 수치 계속 검사  
+)
+
+
+
+#학습 모델
+history = model.fit(
+    tank_train_data,            
+    validation_data=data_rescaled, 
+    epochs=total_run_times,    #지금은 10번 
+    callbacks=[checkpoint]      # 잘 학습 됬을 때만 저장
+)
+
+model.save("tank_classifier_final.h5")#마지막에 모델 저장
