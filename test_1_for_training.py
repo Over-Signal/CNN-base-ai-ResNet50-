@@ -23,7 +23,7 @@ data_rescal = ImageDataGenerator(preprocessing_input=preprocess_input)
 
 #데이터 읽어오기 디렉토리 변경은 나중에 하는걸로
 tank_train_data = tank_train_module.flow_from_directory(
-    "dataset/train(just a example)",
+    "dataset/train",
     target_size=(IMG_SIZE, IMG_SIZE),
     batch_size=BATCH_SIZE,
     class_mode="categorical" 
@@ -83,3 +83,15 @@ history = model.fit(
 )
 
 model.save("tank_classifier_final.h5")#마지막에 모델 저장
+
+
+#최종 검증 (test set)
+test_data = data_rescal.flow_from_directory(
+    "dataset/test",
+    target_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE,
+    class_mode="categorical"
+)
+
+loss, accuracy = model.evaluate(test_data)
+print(f"Test accuracy: {accuracy:.2%}")
