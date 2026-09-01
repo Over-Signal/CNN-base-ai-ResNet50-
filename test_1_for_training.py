@@ -1,97 +1,170 @@
 import tensorflow as tf
-from tensorflow.keras import layers, models, callbacks
+from tensorflow import keras
+from tensorflow.keras import layers
 from tensorflow.keras.applications import ResNet50
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.applications.resnet50 import preprocess_input
+from tensorflow.keras.optimizers import Adam
 import matplotlib.pyplot as plt
 
-#이미지 224*224
+# ===== 설정값 =====
 IMG_SIZE = 224
-BATCH_SIZE = 32
-total_run_times = 10
-types_of_tanks = 10 #일단 탱크 10종으로 표시함
-
-#이건 단순히 더 많은 데이터를 학습하도록 기존이미지를 살짝 변형하는거-사진을 살짝 돌리고 확대하고 ㅇ좌우 회전 시키는거임
-tank_train_module = ImageDataGenerator(
-    preprocessing_input=preprocess_input,#지금 맥 버츄얼 구성해도 잘 안되서 모르겠지마ㅏㄴ 자동 스케일러       
-    rotation_range=10,   
-    zoom_range=0.4,      
-    horizontal_flip=True 
-)
+BATCH_SIZE = 32           # 데이터 1000장 미만이면 줄이기
+EPOCHS_HEAD = 10          
+EPOCHS_FINETUNE = 15      
+UNFREEZE_LAYERS = 30      
+AUTOTUNE = tf.data.AUTOTUNE
 
 
-data_rescal = ImageDataGenerator(preprocessing_input=preprocess_input)
-
-#데이터 읽어오기 디렉토리 변경은 나중에 하는걸로
-tank_train_data = tank_train_module.flow_from_directory(
+# ===== 데이터 읽어오기 =====
+train_ds = keras.utils.image_dataset_from_directory(
     "dataset/train",
-    target_size=(IMG_SIZE, IMG_SIZE),
+    image_size=(IMG_SIZE, IMG_SIZE),
     batch_size=BATCH_SIZE,
-    class_mode="categorical" 
+    label_mode="categorical",
+    shuffle=True,
+    seed=42
 )
 
-data_rescaled = data_rescal.flow_from_directory(
+val_ds = keras.utils.image_dataset_from_directory(
     "dataset/val",
-    target_size=(IMG_SIZE, IMG_SIZE),
+    image_size=(IMG_SIZE, IMG_SIZE),
     batch_size=BATCH_SIZE,
-    class_mode="categorical"
+    label_mode="categorical",
+    shuffle=False
 )
 
-#요게 ResNet50 쓰는 이유->기본 트레이닝 된 걸 들고오는거(모양, 선, 색깔, 등등)
+test_ds = keras.utils.image_dataset_from_directory(
+    "dataset/test",
+    image_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE,
+    label_mode="categorical",
+    shuffle=False
+)
+
+# 클래스 순서는 prefetch 붙이기 전에 뽑아둬야 함
+class_names = train_ds.class_names
+print("클래스 순서:", class_names)
+types_of_tanks = len(class_names)
+train_ds = train_ds.prefetch(AUTOTUNE)
+val_ds = val_ds.prefetch(AUTOTUNE)
+test_ds = test_ds.prefetch(AUTOTUNE)
+
+
+# ===== 증강 =====
+data_augmentation = keras.Sequential([
+    layers.RandomFlip("horizontal"),
+    layers.RandomRotation(0.04),
+    layers.RandomZoom(0.2),
+    layers.RandomTranslation(0.1, 0.1),
+], name="augment")
+
+
+# ===== 베이스 모델 =====
 base_model = ResNet50(
     weights="imagenet",
-    include_top=False, #이걸 나누는 라벨은 없애는 걸로
+    include_top=False,
     input_shape=(IMG_SIZE, IMG_SIZE, 3)
 )
 
+base_model.trainable = False   # 1단계에서는 통째로 얼려둠
 
-base_model.trainable = False#이건 구글링 해서 넣은건데 아직 잘 모르겠다
 
-#학습 전 머리 달아주는 사전 작업
-model = models.Sequential([
-    base_model, #ResNet50
-    layers.GlobalAveragePooling2D(),  #3차원->1차원으로 단순화 시키는 명령어?
-    layers.Dense(256, activation='relu'), #뉴런(생각하는 장치?) 256개 생성
-    layers.Dropout(0.5), #과부화 피하기 용 - 절반 쉬게하기              
-    layers.Dense(types_of_tanks, activation='softmax') 
-])
+# ===== 모델 조립 =====
+inputs = keras.Input(shape=(IMG_SIZE, IMG_SIZE, 3))
+x = data_augmentation(inputs)
+x = preprocess_input(x)                    # ResNet50 전용 스케일러
+x = base_model(x, training=False)          # BatchNorm 추론 모드 고정
+x = layers.GlobalAveragePooling2D()(x)
+x = layers.Dense(256, activation="relu")(x)
+x = layers.Dropout(0.3)(x)
+outputs = layers.Dense(types_of_tanks, activation="softmax")(x)
 
-# 모델이 어떻게 생겼나 명세서 한 번 출력해 봅니다.
+model = keras.Model(inputs, outputs)
 model.summary()
 
 
+# ===== 콜백 =====
+cb_list = [
+    keras.callbacks.ModelCheckpoint(
+        "tank_classifier_best.keras",
+        save_best_only=True,
+        monitor="val_accuracy",
+        mode="max"
+    ),
+    keras.callbacks.EarlyStopping(
+        monitor="val_accuracy",
+        patience=5,
+        mode="max",
+        restore_best_weights=True
+    ),
+    keras.callbacks.ReduceLROnPlateau(
+        monitor="val_loss",
+        factor=0.5,
+        patience=3,
+        min_lr=1e-7
+    )
+]
+
+
+# ===== 1단계: 머리만 학습 =====
+print("\n===== 1단계: 헤드 학습 =====")
 model.compile(
-    optimizer='adam', #더 좋은 optimizer 있는지 찾는중
-    loss='categorical_crossentropy', #이게 오차 구하는 공식-레딧
-    metrics=['accuracy'] #밑에 학습 시 저장하는 기준을 정확도로 설정
+    optimizer=Adam(learning_rate=1e-3),
+    loss="categorical_crossentropy",
+    metrics=["accuracy"]
 )
 
-#자동저장
-checkpoint = callbacks.ModelCheckpoint(
-    "tank_classifier_beta.h5", #파일 이름 설정
-    save_best_only=True, #더 좋은게 나오면 계속 다시 저장       
-    monitor='val_accuracy'   #정확도 수치 계속 검사  
+history_head = model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=EPOCHS_HEAD,
+    callbacks=cb_list
 )
 
 
+# ===== 2단계: 뒷블록 풀고 미세조정 =====
+print("\n===== 2단계: 미세조정 =====")
+base_model.trainable = True
 
-#학습 모델
-history = model.fit(
-    tank_train_data,            
-    validation_data=data_rescaled, 
-    epochs=total_run_times,    #지금은 10번 
-    callbacks=[checkpoint]      # 잘 학습 됬을 때만 저장
+for layer in base_model.layers[:-UNFREEZE_LAYERS]:
+    layer.trainable = False
+
+for layer in base_model.layers[-UNFREEZE_LAYERS:]:
+    if isinstance(layer, layers.BatchNormalization):
+        layer.trainable = False
+
+model.compile(
+    optimizer=Adam(learning_rate=1e-5),
+    loss="categorical_crossentropy",
+    metrics=["accuracy"]
 )
 
-model.save("tank_classifier_final.h5")#마지막에 모델 저장
-
-
-#최종 검증 (test set)
-test_data = data_rescal.flow_from_directory(
-    "dataset/test",
-    target_size=(IMG_SIZE, IMG_SIZE),
-    batch_size=BATCH_SIZE,
-    class_mode="categorical"
+history_ft = model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=EPOCHS_FINETUNE,
+    callbacks=cb_list
 )
 
-loss, accuracy = model.evaluate(test_data)
+model.save("tank_classifier_final.keras")
+
+
+# ===== 최종 검증 =====
+loss, accuracy = model.evaluate(test_ds)
 print(f"Test accuracy: {accuracy:.2%}")
+
+
+# ===== 학습 곡선 =====
+acc = history_head.history["accuracy"] + history_ft.history["accuracy"]
+val_acc = history_head.history["val_accuracy"] + history_ft.history["val_accuracy"]
+
+plt.figure(figsize=(8, 5))
+plt.plot(acc, label="train")
+plt.plot(val_acc, label="val")
+plt.axvline(len(history_head.history["accuracy"]) - 1,
+            color="gray", linestyle="--", label="finetune start")
+plt.xlabel("epoch")
+plt.ylabel("accuracy")
+plt.legend()
+plt.savefig("training_curve.png")
+plt.show()
